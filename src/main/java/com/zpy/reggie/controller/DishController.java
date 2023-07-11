@@ -16,6 +16,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -71,6 +72,10 @@ public class DishController {
 
     /**
      * 菜品分页查询
+     * @param page
+     * @param pageSize
+     * @param name
+     * @return
      */
     @GetMapping("/page")
     public R<Page<DishDto>> page(Integer page, Integer pageSize, String name) {
@@ -224,39 +229,72 @@ public class DishController {
     }
 
     /**
-     * 根据id修改菜品状态
+     * 根据id修改菜品起/停售状态
+     * @param status
+     * @param ids
+     * @return
      */
     @PostMapping("/status/{status}")
     @Transactional
     @CacheEvict(value = "setmealCache", condition = "#status == 0", allEntries = true)
-    public R<String> status(@PathVariable Integer status, Long ids){
+    public R<String> status(@PathVariable Integer status, @RequestParam List<Long> ids){
         log.info("需要将菜品: {} 的状态修改为 {}", ids, status);
+        // 遍历ids
+        for (Long id : ids) {
+            // 首先将该菜品的状态设为停售/起售
+            Dish newDish = dishService.getById(id);
+            if (newDish == null) throw new CustomException("删除失败!");
+            newDish.setStatus(status);
+            dishService.updateById(newDish);
 
-        // 首先将该菜品的状态设为停售/起售
-        Dish newDish = dishService.getById(ids);
-        if (newDish == null) throw new CustomException("删除失败!");
-        newDish.setStatus(status);
-        dishService.updateById(newDish);
+            // 删除该菜品分类下的菜品缓存
+            String key = "dish_" + newDish.getCategoryId() + "_1";
+            log.info("清理redis中的缓存:{}", key);
+            redisTemplate.delete(key);
 
-        // 删除该菜品分类下的菜品缓存
-        String key = "dish_" + newDish.getCategoryId() + "_1";
-        log.info("清理redis中的缓存:{}", key);
-        redisTemplate.delete(key);
-
-        // 如果是将菜品状态设为停售, 则将包含该菜品的套餐状态也设为停售
-        if (status == 0) {
-            LambdaQueryWrapper<SetmealDish> queryWrapper = new LambdaQueryWrapper<>();
-            queryWrapper.eq(SetmealDish::getDishId, newDish.getId());
-            List<SetmealDish> setmealDishList = setmealDishService.list(queryWrapper);
-            for (SetmealDish setmealDish : setmealDishList) {
-                Long setmealId = setmealDish.getSetmealId();
-                Setmeal setmeal = setmealService.getById(setmealId);
-                setmeal.setStatus(status);
-                setmealService.updateById(setmeal);
+            // 如果是将菜品状态设为停售, 则将包含该菜品的套餐状态也设为停售
+            if (status == 0) {
+                LambdaQueryWrapper<SetmealDish> queryWrapper = new LambdaQueryWrapper<>();
+                queryWrapper.eq(SetmealDish::getDishId, newDish.getId());
+                List<SetmealDish> setmealDishList = setmealDishService.list(queryWrapper);
+                for (SetmealDish setmealDish : setmealDishList) {
+                    Long setmealId = setmealDish.getSetmealId();
+                    Setmeal setmeal = setmealService.getById(setmealId);
+                    setmeal.setStatus(status);
+                    setmealService.updateById(setmeal);
+                }
             }
         }
 
         return R.success("菜品状态修改成功");
 
+    }
+
+    /**
+     * 根据ids批量删除/单个删除菜品信息
+     * @param ids
+     * @return
+     */
+    @DeleteMapping
+    @Transactional
+    public R<String> delete(@RequestParam List<Long> ids) {
+        log.info("要删除的菜品id为: {}", ids);
+        // 1. 遍历菜品id, 查询是否有套餐关联某一菜品
+        for (Long id : ids) {
+            // 如果有一个菜品有关联的套餐, 则使用事务管理的删除方法一个菜品信息也不删除
+            LambdaQueryWrapper<SetmealDish> queryWrapper = new LambdaQueryWrapper<>();
+            queryWrapper.eq(SetmealDish::getDishId, id);
+            List<SetmealDish> list = setmealDishService.list(queryWrapper);
+            if (list.size() > 0) {
+                throw new CustomException("该菜品有关联的套餐, 无法删除");
+            }
+        }
+
+        // 2. 所有待删除的菜品均未关联套餐, 那么就将这些菜品从数据库中删除
+        dishService.removeByIds(ids);
+        // 3. 同时将所有菜品的分类缓存信息从redis中删除
+        Set keys = redisTemplate.keys("dish_*");
+        redisTemplate.delete(keys);
+        return R.success("菜品信息删除成功");
     }
 }

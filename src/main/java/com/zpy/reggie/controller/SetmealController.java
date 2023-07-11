@@ -2,11 +2,15 @@ package com.zpy.reggie.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.zpy.reggie.common.CustomException;
 import com.zpy.reggie.common.R;
 import com.zpy.reggie.dto.SetmealDto;
 import com.zpy.reggie.entity.Category;
+import com.zpy.reggie.entity.Dish;
 import com.zpy.reggie.entity.Setmeal;
+import com.zpy.reggie.entity.SetmealDish;
 import com.zpy.reggie.service.CategoryService;
+import com.zpy.reggie.service.DishService;
 import com.zpy.reggie.service.SetmealDishService;
 import com.zpy.reggie.service.SetmealService;
 import lombok.extern.slf4j.Slf4j;
@@ -15,6 +19,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -28,6 +33,9 @@ import java.util.stream.Collectors;
 @RequestMapping("/setmeal")
 @Slf4j
 public class SetmealController {
+
+    @Autowired
+    private DishService dishService;
 
     @Autowired
     private SetmealService setmealService;
@@ -45,6 +53,7 @@ public class SetmealController {
      */
     @PostMapping
     @CacheEvict(value = "setmealCache", allEntries = true)
+    @Transactional
     public R<String> save(@RequestBody SetmealDto setmealDto){
         log.info("新增套餐信息: {}", setmealDto);
         setmealService.saveWithDish(setmealDto);
@@ -123,6 +132,46 @@ public class SetmealController {
 
         List<Setmeal> setmealList = setmealService.list(queryWrapper);
         return R.success(setmealList);
+    }
+
+    /**
+     * 根据ids批量/单个修改套餐起/停售状态
+     * @param status
+     * @param ids
+     * @return
+     */
+    @PostMapping("/status/{status}")
+    @CacheEvict(value = "setmealCache", allEntries = true)
+    public R<String> status(@PathVariable Integer status, @RequestParam List<Long> ids) {
+        // 1. 如果要修改成的状态为停售, 则直接修改套餐的状态, 见 5.
+
+        // 2. 如果要修改成的状态为起售, 遍历每个待修改状态的套餐id
+        if (status == 1) {
+            for (Long id : ids) {
+                // 3. 根据套餐id查询对应的菜品列表
+                LambdaQueryWrapper<SetmealDish> queryWrapper = new LambdaQueryWrapper<>();
+                queryWrapper.eq(SetmealDish::getSetmealId, id);
+                List<SetmealDish> setmealDishList = setmealDishService.list(queryWrapper);
+                // 4. 如果存在菜品的状态为停售状态, 则修改失败, 抛出业务异常
+                for (SetmealDish setmealDish : setmealDishList) {
+                    Long dishId = setmealDish.getDishId();
+                    Dish dish = dishService.getById(dishId);
+                    if (dish.getStatus() == 0) {
+                        throw new CustomException("套餐中存在停售的菜品, 套餐起售失败");
+                    }
+                }
+            }
+        }
+
+        List<Setmeal> setmealList = setmealService.listByIds(ids);
+        for (Setmeal setmeal : setmealList) {
+            setmeal.setStatus(status);
+        }
+        // 5. 修改套餐的状态
+        setmealService.updateBatchById(setmealList);
+        // 6. 删除redis中关于套餐分类的缓存数据, 见方法上的CacheEvict注解 (清理所有的套餐缓存)
+
+        return R.success("修改套餐状态成功");
     }
 
 }
