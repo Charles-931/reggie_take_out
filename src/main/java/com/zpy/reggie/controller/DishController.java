@@ -2,19 +2,18 @@ package com.zpy.reggie.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.zpy.reggie.common.CustomException;
 import com.zpy.reggie.common.R;
 import com.zpy.reggie.dto.DishDto;
-import com.zpy.reggie.entity.Category;
-import com.zpy.reggie.entity.Dish;
-import com.zpy.reggie.entity.DishFlavor;
-import com.zpy.reggie.service.CategoryService;
-import com.zpy.reggie.service.DishFlavorService;
-import com.zpy.reggie.service.DishService;
+import com.zpy.reggie.entity.*;
+import com.zpy.reggie.service.*;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -41,6 +40,12 @@ public class DishController {
 
     @Autowired
     private RedisTemplate redisTemplate;
+
+    @Autowired
+    private SetmealDishService setmealDishService;
+
+    @Autowired
+    private SetmealService setmealService;
 
     /**
      * 新增菜品
@@ -216,5 +221,42 @@ public class DishController {
         redisTemplate.opsForValue().set(key, dishDtoList, 60, TimeUnit.MINUTES);
 
         return R.success(dishDtoList);
+    }
+
+    /**
+     * 根据id修改菜品状态
+     */
+    @PostMapping("/status/{status}")
+    @Transactional
+    @CacheEvict(value = "setmealCache", condition = "#status == 0", allEntries = true)
+    public R<String> status(@PathVariable Integer status, Long ids){
+        log.info("需要将菜品: {} 的状态修改为 {}", ids, status);
+
+        // 首先将该菜品的状态设为停售/起售
+        Dish newDish = dishService.getById(ids);
+        if (newDish == null) throw new CustomException("删除失败!");
+        newDish.setStatus(status);
+        dishService.updateById(newDish);
+
+        // 删除该菜品分类下的菜品缓存
+        String key = "dish_" + newDish.getCategoryId() + "_1";
+        log.info("清理redis中的缓存:{}", key);
+        redisTemplate.delete(key);
+
+        // 如果是将菜品状态设为停售, 则将包含该菜品的套餐状态也设为停售
+        if (status == 0) {
+            LambdaQueryWrapper<SetmealDish> queryWrapper = new LambdaQueryWrapper<>();
+            queryWrapper.eq(SetmealDish::getDishId, newDish.getId());
+            List<SetmealDish> setmealDishList = setmealDishService.list(queryWrapper);
+            for (SetmealDish setmealDish : setmealDishList) {
+                Long setmealId = setmealDish.getSetmealId();
+                Setmeal setmeal = setmealService.getById(setmealId);
+                setmeal.setStatus(status);
+                setmealService.updateById(setmeal);
+            }
+        }
+
+        return R.success("菜品状态修改成功");
+
     }
 }
