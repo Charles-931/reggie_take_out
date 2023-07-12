@@ -104,4 +104,28 @@ public class AddressBookController {
         return R.success(addressBookService.list(queryWrapper));
     }
 
+    /**
+     * 更新地址
+     * @param addressBook
+     * @return
+     */
+    @PutMapping
+    public R<String> update(@RequestBody AddressBook addressBook) {
+        // 根据id 来更新地址簿
+        addressBookService.updateById(addressBook);
+        return R.success("更新成功");
+    }
+
+    /**
+     * 删除地址
+     * @param ids
+     * @return
+     */
+    @DeleteMapping
+    public R<String> delete(Long ids) {
+        // 根据id 删除指定的地址项
+        addressBookService.removeById(ids);
+        return R.success("删除地址成功");
+    }
+
 }

@@ -101,4 +101,16 @@ public class UserController {
         return R.success(user);
     }
 
+    /**
+     * 移动端用户退出登录
+     * @param session
+     * @return
+     */
+    @PostMapping("/loginout")
+    public R<String> logout(HttpSession session) {
+        // 从session中移除用户id
+        session.removeAttribute("user");
+        return R.success("成功退出登录");
+    }
+
 }
